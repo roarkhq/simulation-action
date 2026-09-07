@@ -1,0 +1,66 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # The gate is a shell script customers' pipelines depend on, so an unquoted
+      # expansion here is a broken build for them, not just a style nit.
+      - name: ShellCheck
+        run: shellcheck scripts/gate.sh
+
+      - name: Validate action metadata
+        run: |
+          # Marketplace requires action.yml at the root with a name, description
+          # and branding; a missing key is only discovered at publish time otherwise.
+          python3 - <<'PY'
+          import sys, yaml
+          action = yaml.safe_load(open('action.yml'))
+          missing = [k for k in ('name', 'description', 'runs', 'branding') if k not in action]
+          if missing:
+              sys.exit(f"action.yml is missing: {', '.join(missing)}")
+          for key in ('icon', 'color'):
+              if key not in action['branding']:
+                  sys.exit(f"action.yml branding is missing: {key}")
+          print("action.yml OK")
+          PY
+
+  gate-script:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Exercises the pure parsing/rendering the gate depends on, without needing
+      # an API key or placing real calls.
+      - name: Variables parsing
+        run: |
+          set -euo pipefail
+          VARIABLES='orderNumber=12345
+          customerName=John Doe
+          query=a=b&c=d
+          # a comment
+          lineWithNoEquals'
+          export VARIABLES
+          eval "$(sed -n '/^variables_json()/,/^}/p' scripts/gate.sh)"
+          actual="$(variables_json)"
+          expected='{"orderNumber":"12345","customerName":"John Doe","query":"a=b&c=d"}'
+          echo "$actual"
+          [ "$actual" = "$expected" ] || { echo "expected: $expected"; exit 1; }
+
+      - name: Rejects missing and conflicting inputs
+        run: |
+          set -uo pipefail
+          run() { INPUT_PLAN_ID="${1:-}" INPUT_CONFIG="${2:-}" ./scripts/gate.sh >/dev/null 2>&1; echo $?; }
+          [ "$(run '' '')" = '1' ] || { echo 'expected failure when neither input is set'; exit 1; }
+          [ "$(run 'a-plan' 'a-file.yml')" = '1' ] || { echo 'expected failure when both are set'; exit 1; }
+          echo 'input validation OK'
