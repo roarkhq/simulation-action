@@ -167,7 +167,7 @@ render_failures() {
   printf '%s' "$gate" | jq -r '
     (.failures // [])[] |
     if   .type == "BELOW_MIN_PASS_RATE"        then "- Run pass rate \(.passRate // "none")% is below the required \(.minPassRate)% (\(.mode))"
-    elif .type == "METRIC_BELOW_MIN_PASS_RATE" then "- `\(.metricName // .metricDefinitionId)` passed \(.passRate)% of calls, below its required \(.minPassRate)%"
+    elif .type == "METRIC_BELOW_REQUIRED_PASS_RATE" then "- `\(.metricName // .metricDefinitionId)` passed \(.passRate)% of calls, below its required \(.requiredPassRate)%"
     elif .type == "METRIC_NOT_EVALUATED"       then "- `\(.metricName // .metricDefinitionId)` was never evaluated on any call"
     elif .type == "INCOMPLETE_COVERAGE"        then "- Only \(.evaluatedCalls) of \(.expectedCalls) calls were evaluated"
     elif .type == "RUN_NOT_COMPLETED"          then "- The run did not complete (\(.status))"

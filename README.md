@@ -36,7 +36,9 @@ Two modes:
 | `WEIGHTED` | "Is the mix I care about healthy?" — weighted mean of each check's rate. |
 | `OVERALL` | "Were most verdicts good?" — every (check, call) verdict counted once, so busier checks weigh more. |
 
-On top of the global threshold, any metric can carry its **own floor** (*"latency must clear 12% whatever the global rate says"*). Both must hold.
+On top of the global threshold, any metric can carry a `requiredPassRate` of its own (*"latency must clear 12% whatever the global rate says"*). Both must hold.
+
+That is the one thing a weight can't do. A weight is proportional, so a heavily-weighted check can still be outvoted by everything else scoring well. A `requiredPassRate` fails the run outright, even when the global rate clears. Use a weight for *"this matters more"*, and a `requiredPassRate` for *"this is non-negotiable"*.
 
 A run **fails** when it did not complete, when a check you gated on never ran, when some calls dropped out of scoring, or when any rate is below its minimum. None of those pass silently.
 
@@ -83,7 +85,7 @@ metrics:
     weight: 50
   - slug: latency
     weight: 12
-    minPassRate: 12         # this check's own floor, whatever the global rate
+    requiredPassRate: 12    # this check's own floor, whatever the global rate
   - slug: leaked_pii
     weight: 88
     expectedBooleanValue: false    # this check passes when the answer is FALSE
