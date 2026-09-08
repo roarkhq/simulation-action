@@ -83,7 +83,7 @@ metrics:
     weight: 50
   - slug: latency
     weight: 12
-    successMinPassRate: 12         # this check's own floor, whatever the global rate
+    minPassRate: 12         # this check's own floor, whatever the global rate
   - slug: leaked_pii
     weight: 88
     expectedBooleanValue: false    # this check passes when the answer is FALSE
