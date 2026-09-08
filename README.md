@@ -17,21 +17,26 @@ Roark decides, not this action. You configure **success criteria** on the run pl
 
 Criteria are pinned to each run when it starts, so editing a plan never rewrites the verdict of a run that already happened.
 
-There are two levels, and both must hold:
+**One global threshold** decides the run, and its rate is a weighted combination of your checks. Each metric carries a `weight`, so you decide how much each one counts:
 
-| Level | Meaning |
+| Check | Passed | Rate | Weight |
+|---|---|---|---|
+| agent containment | 30/50 | 60% | 50 |
+| latency | 20/50 | 40% | 12 |
+| response time | 32/50 | 64% | 88 |
+
+`(50x60 + 12x40 + 88x64) / 150` = **60.7%** against your global threshold.
+
+Weights are **relative**, so they need not sum to anything: `50/12/88` and `25/6/44` mean the same thing. Leave them alone and every check counts equally. Set one to `0` to keep a check reported but out of the global rate.
+
+Two modes:
+
+| Mode | The question it answers |
 |---|---|
-| **Run-wide** | The whole run must reach a minimum pass rate. |
-| **Per metric** | An individual check must pass on at least *n*% of its calls. |
+| `WEIGHTED` | "Is the mix I care about healthy?" — weighted mean of each check's rate. |
+| `OVERALL` | "Were most verdicts good?" — every (check, call) verdict counted once, so busier checks weigh more. |
 
-The run-wide rate is computed one of two ways, which genuinely disagree:
-
-| Mode | 1 call fails a rare check · 99 calls pass a common one |
-|---|---|
-| `OVERALL` — every (check, call) verdict counted once | **99%** |
-| `AVERAGE` — unweighted mean of each check's own rate | **50%** |
-
-Pick `AVERAGE` when a rarely-applicable but critical check (say, *"did the agent leak PII?"*) must not be drowned out by a high-volume one.
+On top of the global threshold, any metric can carry its **own floor** (*"latency must clear 12% whatever the global rate says"*). Both must hold.
 
 A run **fails** when it did not complete, when a check you gated on never ran, when some calls dropped out of scoring, or when any rate is below its minimum. None of those pass silently.
 
@@ -74,14 +79,17 @@ flows:
     happyPath: true
     edgeCases: ALL
 metrics:
-  - slug: resolved_customer_issue
-    successMinPassRate: 95
+  - slug: agent_containment
+    weight: 50
+  - slug: latency
+    weight: 12
+    successMinPassRate: 12         # this check's own floor, whatever the global rate
   - slug: leaked_pii
-    expectedBooleanValue: false   # this check passes when the answer is FALSE
-    successMinPassRate: 100
+    weight: 88
+    expectedBooleanValue: false    # this check passes when the answer is FALSE
 ciGate:
   enabled: true
-  mode: AVERAGE
+  mode: WEIGHTED
   minPassRate: 90
 ```
 
