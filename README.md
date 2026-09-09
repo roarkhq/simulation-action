@@ -105,9 +105,26 @@ ciGate:
 
 This runs as a one-off: nothing is added to your saved plans.
 
+Set `save-as-plan: true` to keep it instead. The plan id comes back as the `plan-id`
+output, so a pipeline can create the plan on its first run and pass `plan-id` from
+then on:
+
+```yaml
+      - uses: roarkhq/simulation-action@v1
+        id: sim
+        with:
+          api-token: ${{ secrets.ROARK_API_KEY }}
+          config: .roark/checkout-regression.yml
+          save-as-plan: true
+      - run: echo "Plan ${{ steps.sim.outputs.plan-id }}"
+```
+
 ### Hold one branch to a higher bar
 
-`min-pass-rate` overrides the minimum for this pipeline only, leaving the shared plan alone:
+`min-pass-rate` raises the global minimum for this pipeline only, leaving the shared plan
+alone. It can only tighten: it will not let a run through that the plan's own criteria
+failed, because overruling a per-metric `requiredPassRate` set by the plan's owner is not
+something a pipeline gets to do.
 
 ```yaml
       - uses: roarkhq/simulation-action@v1
@@ -125,10 +142,12 @@ This runs as a one-off: nothing is added to your saved plans.
 | `plan-id` | one of | | Saved run plan to run. |
 | `config` | one of | | Path to a YAML file describing the run. |
 | `variables` | no | | Runtime variables, one `KEY=VALUE` per line. |
-| `min-pass-rate` | no | | Override the minimum pass rate (0-100) for this pipeline. |
+| `save-as-plan` | no | `false` | Keep the `config` as a named run plan instead of running it as a one-off. |
+| `min-pass-rate` | no | | Raise the minimum pass rate (0-100) for this pipeline. Tightens only. |
 | `timeout-minutes` | no | `30` | How long to wait for the run. |
 | `poll-interval-seconds` | no | `15` | How often to check for completion. |
 | `fail-on-timeout` | no | `true` | `false` warns instead of failing when the run overruns. |
+| `cancel-on-exit` | no | `true` | Stop the Roark run when the workflow is cancelled or the wait times out. |
 | `cli-version` | no | pinned | Version of `@roarkanalytics/cli` to run. |
 | `api-base-url` | no | `https://api.roark.ai` | Override the API base URL. |
 
@@ -138,15 +157,37 @@ This runs as a one-off: nothing is added to your saved plans.
 |---|---|
 | `run-id` | The simulation run id. |
 | `run-url` | Link to the run in the Roark platform. |
+| `plan-id` | The run plan behind this run. With `save-as-plan`, the plan that was kept. |
 | `pass-rate` | The pass rate the gate judged, 0-100. |
 | `verdict` | `PASSED`, `FAILED`, or `TIMED_OUT`. |
 
 ## Simulations take minutes
 
-Real calls take real time, so a gated run occupies a runner while it waits. Two ways to keep that cheap:
+Real calls take real time, so a gated run occupies a runner while it waits. Four ways to
+keep that cheap and predictable:
 
 - **Run it where it matters.** Gate `main` or your release branch rather than every push to every branch.
 - **Don't let our slowness block your merge.** `fail-on-timeout: false` turns an overrun into a warning, while a genuine check failure still fails the build.
+- **Cancel superseded runs.** A `concurrency` group stops an old push from holding a runner while a newer one is already testing the same branch. The action cancels the Roark run too, so the abandoned simulation stops placing calls you would otherwise be billed for.
+- **Keep a job-level backstop.** `timeout-minutes` on the job is the last line of defence if the step itself wedges.
+
+```yaml
+jobs:
+  simulate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    concurrency:
+      group: roark-sim-${{ github.ref }}
+      cancel-in-progress: true
+    steps:
+      - uses: roarkhq/simulation-action@v1
+        with:
+          api-token: ${{ secrets.ROARK_API_KEY }}
+          plan-id: 3a1d5e7c-9b2f-4a6d-8c31-5f7e9d0a2b4c
+```
+
+A single failed poll is not a failed build: the action absorbs up to five consecutive
+read failures before giving up, so one network blip does not turn the gate red.
 
 ## Not using GitHub Actions?
 

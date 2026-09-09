@@ -25,9 +25,18 @@ inputs:
   config:
     description: >-
       Path to a YAML file describing the simulation to run, including its
-      success criteria. Runs as a one-off (nothing is added to your saved
-      plans). Provide exactly one of `plan-id` or `config`.
+      success criteria. Runs as a one-off unless `save-as-plan` is set. Provide
+      exactly one of `plan-id` or `config`.
     required: false
+
+  save-as-plan:
+    description: >-
+      Keep the `config` as a named run plan instead of running it as a one-off.
+      The plan id is reported as the `plan-id` output, so a pipeline can create
+      the plan on its first run and pass `plan-id` from then on. Requires a
+      `name` in the config. Ignored without `config`.
+    required: false
+    default: 'false'
 
   variables:
     description: >-
@@ -59,6 +68,14 @@ inputs:
     required: false
     default: 'true'
 
+  cancel-on-exit:
+    description: >-
+      Stop the Roark run when the workflow is cancelled or the wait times out.
+      Leave this on: an abandoned run keeps placing real calls for a result
+      nobody will read, and you are billed for them.
+    required: false
+    default: 'true'
+
   cli-version:
     description: 'Version of @roarkanalytics/cli to run.'
     required: false
@@ -76,6 +93,11 @@ outputs:
   run-url:
     description: 'Link to the run in the Roark platform.'
     value: ${{ steps.gate.outputs.run-url }}
+  plan-id:
+    description: >-
+      The run plan behind this run. With `save-as-plan` this is the plan that
+      was kept, ready to pass back as the `plan-id` input.
+    value: ${{ steps.gate.outputs.plan-id }}
   pass-rate:
     description: 'The pass rate the gate judged, 0-100. Empty when the run produced none.'
     value: ${{ steps.gate.outputs.pass-rate }}
@@ -101,8 +123,10 @@ runs:
         ROARK_BASE_URL: ${{ inputs.api-base-url }}
         INPUT_PLAN_ID: ${{ inputs.plan-id }}
         INPUT_CONFIG: ${{ inputs.config }}
+        INPUT_SAVE_AS_PLAN: ${{ inputs.save-as-plan }}
         INPUT_VARIABLES: ${{ inputs.variables }}
         INPUT_MIN_PASS_RATE: ${{ inputs.min-pass-rate }}
         INPUT_TIMEOUT_MINUTES: ${{ inputs.timeout-minutes }}
         INPUT_POLL_INTERVAL_SECONDS: ${{ inputs.poll-interval-seconds }}
         INPUT_FAIL_ON_TIMEOUT: ${{ inputs.fail-on-timeout }}
+        INPUT_CANCEL_ON_EXIT: ${{ inputs.cancel-on-exit }}
