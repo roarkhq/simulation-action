@@ -25,8 +25,9 @@ readonly PLATFORM_URL="${ROARK_PLATFORM_URL:-https://platform.roark.ai}"
 # teach people the gate is flaky and to ignore it.
 readonly MAX_POLL_FAILURES=5
 
-# Terminal states. Only COMPLETED can carry a verdict; the rest are hard failures
-# because there is no meaningful pass rate to judge.
+# Terminal states. All four carry a verdict: a run that failed or was cancelled
+# reports `passed: false` with a RUN_NOT_COMPLETED reason rather than no verdict at
+# all, so the gate never has to infer an outcome from the status alone.
 is_terminal() {
   case "$1" in
     COMPLETED | FAILED | CANCELLED | TIMED_OUT) return 0 ;;
@@ -102,7 +103,7 @@ printf '::group::Starting simulation\n'
 printf '%s\n' "$body" | jq .
 printf '::endgroup::\n'
 
-start_response="$(printf '%s' "$body" | roark simulation run --body @- 2>&1)" ||
+start_response="$(printf '%s' "$body" | roark simulation run --data @- 2>&1)" ||
   die "Failed to start the simulation: ${start_response}"
 
 run_id="$(printf '%s' "$start_response" | jq -r '.data.simulationRunPlanJobId // .simulationRunPlanJobId // empty')"
@@ -126,7 +127,11 @@ fi
 cancel_run() {
   [[ "$CANCEL_ON_EXIT" == 'true' ]] || return 0
   printf '::warning::Cancelled. Stopping Roark run %s.\n' "$run_id"
-  roark simulation plan job cancel "$run_id" >/dev/null 2>&1 || true
+  # Called through `roark api` rather than a generated command on purpose: cancel has
+  # no generated verb in every CLI version this action may run against, and a missing
+  # verb fails the same way a network error does, silenced by the `|| true` below. The
+  # raw route is stable and present in every version that can start a run at all.
+  roark api post "/v1/simulation/plan/job/${run_id}/cancel" >/dev/null 2>&1 || true
 }
 trap 'cancel_run; exit 130' INT TERM
 
@@ -181,68 +186,112 @@ done
 trap - INT TERM
 
 # ─── Turn the verdict into an exit code ──────────────────────────────────────
-gate="$(printf '%s' "$poll_response" | jq -c '.data.gate // .gate // empty')"
+# The API returns `verdict`: the run judged against the success criteria pinned on
+# the plan when it started. Two numbers live on it and only ONE decides anything:
+#
+#   passed  — every check cleared its OWN minimum. This is the exit status.
+#   score   — the weighted mean of the check rates. REPORTING ONLY. A run can
+#             score 95 and fail, or score 40 and pass, so nothing is gated on it.
+verdict="$(printf '%s' "$poll_response" | jq -c '.data.verdict // .verdict // empty')"
 
-if [[ -z "$gate" || "$gate" == 'null' ]]; then
+if [[ -z "$verdict" || "$verdict" == 'null' ]]; then
   # Never treat a missing verdict as a pass — that would make the gate a silent
-  # no-op, which is worse than a red build because nobody notices. A null verdict
-  # means the run plan has no CI gate configured, not that the run was fine.
-  die "This run returned no gate verdict. Enable the CI gate on the run plan and set its success criteria. Run: ${run_url}"
+  # no-op, which is worse than a red build because nobody notices. Success criteria
+  # are mandatory on every plan, so a null verdict means the plan measures nothing
+  # that produces a pass/fail: it has no boolean metric and no threshold on a
+  # numeric one, so there was nothing to judge.
+  die "This run produced no pass/fail verdict: the run plan has no check to judge. Add a threshold to a numeric metric, or attach a yes/no metric, then re-run. Run: ${run_url}"
 fi
 
-passed="$(printf '%s' "$gate" | jq -r '.passed')"
-pass_rate="$(printf '%s' "$gate" | jq -r '.passRate // empty')"
-mode="$(printf '%s' "$gate" | jq -r '.mode // empty')"
-min_pass_rate="${MIN_PASS_RATE:-$(printf '%s' "$gate" | jq -r '.minPassRate // empty')}"
+passed="$(printf '%s' "$verdict" | jq -r '.passed')"
+score="$(printf '%s' "$verdict" | jq -r 'if .score == null then empty else (.score * 10 | round) / 10 end')"
+min_pass_rate="$(printf '%s' "$verdict" | jq -r '.minPassRate // empty')"
+checks_total="$(printf '%s' "$verdict" | jq -r '.checks | length')"
+checks_passed="$(printf '%s' "$verdict" | jq -r '[.checks[] | select(.passed)] | length')"
 
-# A pipeline-level override is applied here, on top of the server's verdict: the run
-# plan stays the shared baseline while one branch holds itself to a higher bar. It
-# can only tighten. Loosening would mean overruling the per-metric floors and the
-# coverage checks the plan's owner set, which is not something a pipeline gets to do.
+# A pipeline-level override, applied on top of the server's verdict: the run plan
+# stays the shared baseline while one branch holds itself to a higher bar.
+#
+# It tightens EACH CHECK's own minimum — max(check's bar, pipeline's bar) — rather
+# than thresholding `score`. Gating on the score would let a check at 0% hide behind
+# checks at 100%, which is exactly what per-check minimums exist to prevent.
+#
+# Tighten-only by construction: raising a bar can never rescue a check that already
+# missed the lower one, so a run the plan failed stays failed. Loosening would mean
+# overruling the minimums the plan's owner set, which is not a pipeline's call.
+tightened=''
 if [[ -n "$MIN_PASS_RATE" ]]; then
-  if [[ -z "$pass_rate" ]]; then
-    passed='false'
-  elif awk "BEGIN { exit !($pass_rate < $MIN_PASS_RATE) }"; then
+  tightened="$(printf '%s' "$verdict" | jq -c --argjson bar "$MIN_PASS_RATE" '
+    [ .checks[]
+      | select(.passed)
+      | (( [.minPassRate, $bar] | max )) as $effective
+      | select(.passRate == null or .passRate < $effective)
+      | { metricName, metricDefinitionId, passRate, effective: $effective }
+    ]')"
+  if [[ "$(printf '%s' "$tightened" | jq -r 'length')" != '0' ]]; then
     passed='false'
   fi
 fi
 
-emit "pass-rate=${pass_rate}"
+emit "score=${score}"
+emit "checks-passed=${checks_passed}"
+emit "checks-total=${checks_total}"
 
+# One line per missed criterion, in the customer's terms. Every arm matches a
+# `type` the API actually emits; an unknown type still prints rather than being
+# silently dropped, so a new failure kind degrades to noisy instead of invisible.
 render_failures() {
-  printf '%s' "$gate" | jq -r '
-    (.failures // [])[] |
-    if   .type == "BELOW_MIN_PASS_RATE"        then "- Run pass rate \(.passRate // "none")% is below the required \(.minPassRate)% (\(.mode))"
-    elif .type == "METRIC_BELOW_REQUIRED_PASS_RATE" then "- `\(.metricName // .metricDefinitionId)` passed \(.passRate)% of calls, below its required \(.requiredPassRate)%"
-    elif .type == "METRIC_NOT_EVALUATED"       then "- `\(.metricName // .metricDefinitionId)` was never evaluated on any call"
-    elif .type == "NO_CHECKS_EVALUATED"        then "- No pass/fail checks were evaluated. The run plan has a gate but no metrics that produce a verdict."
-    elif .type == "INCOMPLETE_COVERAGE"        then "- Only \(.evaluatedCalls) of \(.expectedCalls) calls were evaluated"
-    elif .type == "RUN_NOT_COMPLETED"          then "- The run did not complete (\(.status))"
+  printf '%s' "$verdict" | jq -r '
+    .failures[] |
+    if   .type == "RUN_NOT_COMPLETED"        then "- The run did not complete (\(.status)), so there is no result to judge."
+    elif .type == "INCOMPLETE_COVERAGE"      then "- Only \(.evaluatedCalls) of \(.expectedCalls) simulations were evaluated, so the run was judged on an incomplete set."
+    elif .type == "METRIC_NOT_EVALUATED"     then "- `\(.metricName // .metricDefinitionId)` produced no result on any simulation."
+    elif .type == "METRIC_BELOW_MIN_PASS_RATE" then "- `\(.metricName // .metricDefinitionId)` passed \(.passRate)% of simulations, below \(if .inherited then "the plan default" else "its own minimum" end) of \(.minPassRate)%."
     else "- \(.type)" end
   '
+  # Failures the pipeline's own stricter bar introduced. Reported separately: the
+  # plan was fine with these, this pipeline is not, and conflating the two sends
+  # people to edit a plan that never failed.
+  if [[ -n "$tightened" && "$(printf '%s' "$tightened" | jq -r 'length')" != '0' ]]; then
+    printf '%s' "$tightened" | jq -r --argjson bar "$MIN_PASS_RATE" '
+      .[] | "- `\(.metricName // .metricDefinitionId)` passed \(.passRate // "no")% of simulations, below this pipeline'"'"'s min-pass-rate of \($bar)%."
+    '
+  fi
+}
+
+# `score` is absent when nothing was evaluated, which is not the same as a score of
+# zero: nothing was measured, rather than everything failing.
+score_line() {
+  if [[ -n "$score" ]]; then
+    printf 'score %s%%, %s of %s checks cleared their minimums (plan default %s%%)' \
+      "$score" "$checks_passed" "$checks_total" "$min_pass_rate"
+  else
+    printf 'no score (nothing was evaluated), %s of %s checks cleared their minimums (plan default %s%%)' \
+      "$checks_passed" "$checks_total" "$min_pass_rate"
+  fi
 }
 
 if [[ "$passed" == 'true' ]]; then
   emit "verdict=PASSED"
   summary "### ✅ Roark simulation passed"
   summary ""
-  summary "**${pass_rate}%** pass rate (${mode}), minimum **${min_pass_rate}%**"
+  summary "$(score_line)"
   summary ""
   summary "[View run](${run_url})"
-  printf '✅ Passed — %s%% (%s), min %s%%\n%s\n' "$pass_rate" "$mode" "$min_pass_rate" "$run_url"
+  printf '✅ Passed: %s\n%s\n' "$(score_line)" "$run_url"
   exit 0
 fi
 
 emit "verdict=FAILED"
 summary "### ❌ Roark simulation failed"
 summary ""
-summary "**${pass_rate:-no}%** pass rate (${mode}), minimum **${min_pass_rate}%**"
+summary "$(score_line)"
 summary ""
 render_failures >>"${GITHUB_STEP_SUMMARY:-/dev/null}"
 summary ""
 summary "[View run](${run_url})"
 
-printf '❌ Failed — %s%% (%s), min %s%%\n' "${pass_rate:-no}" "$mode" "$min_pass_rate"
+printf '❌ Failed: %s\n' "$(score_line)"
 render_failures
 printf '%s\n' "$run_url"
 exit 1

@@ -45,9 +45,11 @@ inputs:
 
   min-pass-rate:
     description: >-
-      Override the minimum pass rate (0-100) for this pipeline only, leaving the
-      run plan untouched. Use it to hold a release branch to a higher bar than
-      the plan's own default.
+      Hold every check to at least this minimum (0-100) for this pipeline only,
+      leaving the run plan untouched. Applied per check, on top of each check's
+      own minimum, so a release branch can demand more than the shared plan.
+      Tightens only: it can fail a run the plan would have passed, never pass one
+      the plan failed.
     required: false
 
   timeout-minutes:
@@ -98,9 +100,19 @@ outputs:
       The run plan behind this run. With `save-as-plan` this is the plan that
       was kept, ready to pass back as the `plan-id` input.
     value: ${{ steps.gate.outputs.plan-id }}
-  pass-rate:
-    description: 'The pass rate the gate judged, 0-100. Empty when the run produced none.'
-    value: ${{ steps.gate.outputs.pass-rate }}
+  score:
+    description: >-
+      The run's quality score, 0-100: the weighted mean of each check's pass rate.
+      Reporting only, for dashboards and trend lines. The pass/fail decision is
+      `verdict`, never this: a run can score 95 and fail, or 40 and pass. Empty
+      when nothing was evaluated.
+    value: ${{ steps.gate.outputs.score }}
+  checks-passed:
+    description: 'How many checks cleared their own minimum.'
+    value: ${{ steps.gate.outputs.checks-passed }}
+  checks-total:
+    description: 'How many checks the run was judged on.'
+    value: ${{ steps.gate.outputs.checks-total }}
   verdict:
     description: 'PASSED, FAILED, or TIMED_OUT.'
     value: ${{ steps.gate.outputs.verdict }}
