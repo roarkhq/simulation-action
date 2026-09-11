@@ -8,7 +8,7 @@ Your agent gets called by simulated customers, every call is scored against the 
 - uses: roarkhq/simulation-action@v1
   with:
     api-token: ${{ secrets.ROARK_API_KEY }}
-    plan-id: 3a1d5e7c-9b2f-4a6d-8c31-5f7e9d0a2b4c
+    plan-id: <your-plan-id>
 ```
 
 ## How the pass/fail decision is made
@@ -58,7 +58,7 @@ jobs:
       - uses: roarkhq/simulation-action@v1
         with:
           api-token: ${{ secrets.ROARK_API_KEY }}
-          plan-id: 3a1d5e7c-9b2f-4a6d-8c31-5f7e9d0a2b4c
+          plan-id: <your-plan-id>
           variables: |
             orderNumber=12345
             customerName=John Doe
@@ -72,9 +72,9 @@ name: Checkout regression
 direction: OUTBOUND
 maxSimulationDurationSeconds: 300
 agentEndpoints:
-  - id: 7c9e6679-7425-40de-944b-e07fc1f90ae7
+  - id: <your-agent-endpoint-id>
 flows:
-  - id: 550e8400-e29b-41d4-a716-446655440000
+  - id: <your-flow-id>
     happyPath: true
     edgeCases: ALL
 metrics:
@@ -126,7 +126,7 @@ overruling a minimum the plan's owner set is not something a pipeline gets to do
       - uses: roarkhq/simulation-action@v1
         with:
           api-token: ${{ secrets.ROARK_API_KEY }}
-          plan-id: 3a1d5e7c-9b2f-4a6d-8c31-5f7e9d0a2b4c
+          plan-id: <your-plan-id>
           min-pass-rate: 99
 ```
 
@@ -181,7 +181,7 @@ jobs:
       - uses: roarkhq/simulation-action@v1
         with:
           api-token: ${{ secrets.ROARK_API_KEY }}
-          plan-id: 3a1d5e7c-9b2f-4a6d-8c31-5f7e9d0a2b4c
+          plan-id: <your-plan-id>
 ```
 
 A single failed poll is not a failed build: the action absorbs up to five consecutive
