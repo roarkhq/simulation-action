@@ -72,9 +72,9 @@ name: Checkout regression
 direction: OUTBOUND
 maxSimulationDurationSeconds: 300
 agentEndpoints:
-  - id: 7c9e6679-7425-40de-944b-e07fc1f90ae7
+  - id: <your-agent-endpoint-id>
 flows:
-  - id: 550e8400-e29b-41d4-a716-446655440000
+  - id: <your-flow-id>
     happyPath: true
     edgeCases: ALL
 metrics:
