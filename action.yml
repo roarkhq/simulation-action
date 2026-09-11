@@ -1,0 +1,144 @@
+# Marketplace requires this file at the repository root, and the `name` to be
+# globally unique across Marketplace listings, GitHub orgs and reserved names.
+name: 'Roark Simulation Gate'
+description: 'Run a Roark voice-agent simulation and gate your pipeline on the result.'
+author: 'Roark'
+
+branding:
+  icon: 'phone-call'
+  color: 'purple'
+
+inputs:
+  api-token:
+    description: >-
+      Roark API key. Store it as a repository secret and pass
+      ${{ secrets.ROARK_API_KEY }}; never inline it. Needs the SIMULATION_RUN
+      permission plus read access to the run and its metrics.
+    required: true
+
+  plan-id:
+    description: >-
+      The saved run plan to run. Its success criteria decide pass or fail.
+      Provide exactly one of `plan-id` or `config`.
+    required: false
+
+  config:
+    description: >-
+      Path to a YAML file describing the simulation to run, including its
+      success criteria. Runs as a one-off unless `save-as-plan` is set. Provide
+      exactly one of `plan-id` or `config`.
+    required: false
+
+  save-as-plan:
+    description: >-
+      Keep the `config` as a named run plan instead of running it as a one-off.
+      The plan id is reported as the `plan-id` output, so a pipeline can create
+      the plan on its first run and pass `plan-id` from then on. Requires a
+      `name` in the config. Ignored without `config`.
+    required: false
+    default: 'false'
+
+  variables:
+    description: >-
+      Runtime variables for this run, one KEY=VALUE per line.
+    required: false
+
+  min-pass-rate:
+    description: >-
+      Hold every check to at least this minimum (0-100) for this pipeline only,
+      leaving the run plan untouched. Applied per check, on top of each check's
+      own minimum, so a release branch can demand more than the shared plan.
+      Tightens only: it can fail a run the plan would have passed, never pass one
+      the plan failed.
+    required: false
+
+  timeout-minutes:
+    description: 'How long to wait for the run before giving up.'
+    required: false
+    default: '30'
+
+  poll-interval-seconds:
+    description: 'How often to check whether the run has finished.'
+    required: false
+    default: '15'
+
+  fail-on-timeout:
+    description: >-
+      What to do when the run does not finish in time. `true` fails the step.
+      `false` exits neutral, so our own slowness does not block your merge while
+      a genuine check failure still does.
+    required: false
+    default: 'true'
+
+  cancel-on-exit:
+    description: >-
+      Stop the Roark run when the workflow is cancelled or the wait times out.
+      Leave this on: an abandoned run keeps placing real calls for a result
+      nobody will read, and you are billed for them.
+    required: false
+    default: 'true'
+
+  cli-version:
+    description: 'Version of @roarkanalytics/cli to run.'
+    required: false
+    default: '0.5.0'
+
+  api-base-url:
+    description: 'Override the Roark API base URL.'
+    required: false
+    default: 'https://api.roark.ai'
+
+outputs:
+  run-id:
+    description: 'The simulation run id.'
+    value: ${{ steps.gate.outputs.run-id }}
+  run-url:
+    description: 'Link to the run in the Roark platform.'
+    value: ${{ steps.gate.outputs.run-url }}
+  plan-id:
+    description: >-
+      The run plan behind this run. With `save-as-plan` this is the plan that
+      was kept, ready to pass back as the `plan-id` input.
+    value: ${{ steps.gate.outputs.plan-id }}
+  score:
+    description: >-
+      The run's quality score, 0-100: the weighted mean of each check's pass rate.
+      Reporting only, for dashboards and trend lines. The pass/fail decision is
+      `verdict`, never this: a run can score 95 and fail, or 40 and pass. Empty
+      when nothing was evaluated.
+    value: ${{ steps.gate.outputs.score }}
+  checks-passed:
+    description: 'How many checks cleared their own minimum.'
+    value: ${{ steps.gate.outputs.checks-passed }}
+  checks-total:
+    description: 'How many checks the run was judged on.'
+    value: ${{ steps.gate.outputs.checks-total }}
+  verdict:
+    description: 'PASSED, FAILED, or TIMED_OUT.'
+    value: ${{ steps.gate.outputs.verdict }}
+
+runs:
+  using: 'composite'
+  steps:
+    # Pinned rather than `latest`: a CLI release should never change what a
+    # pipeline on `@v1` does without us bumping it deliberately.
+    - name: Install Roark CLI
+      shell: bash
+      run: npm install --global --no-fund --no-audit "@roarkanalytics/cli@${{ inputs.cli-version }}"
+
+    - name: Run simulation and gate
+      id: gate
+      shell: bash
+      run: ${GITHUB_ACTION_PATH}/scripts/gate.sh
+      env:
+        ROARK_API_BEARER_TOKEN: ${{ inputs.api-token }}
+        ROARK_BASE_URL: ${{ inputs.api-base-url }}
+        INPUT_PLAN_ID: ${{ inputs.plan-id }}
+        INPUT_CONFIG: ${{ inputs.config }}
+        INPUT_SAVE_AS_PLAN: ${{ inputs.save-as-plan }}
+        INPUT_VARIABLES: ${{ inputs.variables }}
+        INPUT_MIN_PASS_RATE: ${{ inputs.min-pass-rate }}
+        INPUT_TIMEOUT_MINUTES: ${{ inputs.timeout-minutes }}
+        INPUT_POLL_INTERVAL_SECONDS: ${{ inputs.poll-interval-seconds }}
+        INPUT_FAIL_ON_TIMEOUT: ${{ inputs.fail-on-timeout }}
+        INPUT_CANCEL_ON_EXIT: ${{ inputs.cancel-on-exit }}

@@ -1,0 +1,36 @@
+name: Release
+
+# Customers pin `@v1` so they pick up fixes without editing their workflows.
+# That only works if the major tag is moved to each release, which is what this does.
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: write
+
+jobs:
+  move-major-tag:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Move the major tag to this release
+        env:
+          TAG: ${{ github.event.release.tag_name }}
+        run: |
+          set -euo pipefail
+          # v1.4.2 -> v1. A prerelease (v1.0.0-rc.1) must not move the tag customers
+          # are pinned to, so bail out rather than shipping it to everyone.
+          if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::notice::${TAG} is not a stable release; leaving the major tag alone."
+            exit 0
+          fi
+          major="${TAG%%.*}"
+          git config user.name 'github-actions[bot]'
+          git config user.email 'github-actions[bot]@users.noreply.github.com'
+          git tag -f "$major" "$TAG"
+          git push origin "$major" --force
+          echo "::notice::${major} now points at ${TAG}"
