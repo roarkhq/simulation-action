@@ -49,16 +49,18 @@ A gate answers one question: **did this change make the agent worse?** Only a ru
 | Outcome | When | Exit |
 |---|---|---|
 | **PASSED** | Every check cleared its own minimum. | 0 |
-| **FAILED** | The run completed cleanly and a check fell short. | **1** |
-| **SKIPPED** | The run never produced a judgeable result: a Roark outage, a model-provider error, simulations that died before they were graded, a check that produced no result. | 0, with a warning |
+| **FAILED** | A check fell short on a run that completed cleanly, or your agent could not be reached or never spoke. | **1** |
+| **SKIPPED** | The run never produced a judgeable result: a Roark outage, a model-provider error, simulations that failed on our side, a check that produced no result, or a run someone cancelled. | 0, with a warning |
 
-A check falling below its minimum is the **only** thing that fails your build. Our problems are never your problem: they are annotated loudly, reported as `verdict: SKIPPED` with a `skip-reason`, and then they get out of your way.
+Only your agent fails your build: a check falling below its minimum, or your agent not being there to test. Our problems are never your problem: they are annotated loudly, reported as `verdict: SKIPPED` with a `skip-reason`, and then they get out of your way.
 
 That is a deliberate trade. If our infrastructure can turn your pipeline red, the first thing your team learns is to re-run until green, and from then on nobody reads the gate at all, including on the run where the agent really did regress. A red build has to mean something.
 
 Operational problems **poison** the verdict rather than sitting beside it. If half a run's simulations never completed, a check reported at 40% is not evidence of a regression, it is evidence we could not measure. So any operational failure makes the whole run `SKIPPED`, even when a check also fell short.
 
-Two exceptions, both deliberate:
+An agent that did not answer, was busy, declined, or answered and never spoke is the exception. That is a count of what your agent did, not a rate over a partial run, so it fails the build even when something else in the run went wrong on our side.
+
+Two more exceptions, both deliberate:
 
 - **A plan with no checks still fails.** That is not our outage, it is a plan that can never gate anything, and skipping it would leave a green check next to a permanent no-op.
 - **A rejected request still fails.** A bad token, an unknown `plan-id` or a config the API refuses is your side, and a gate that skips on a typo never gates again. Only errors that read as ours (5xx, rate limits, dead sockets) are skipped.
@@ -172,7 +174,7 @@ overruling a minimum the plan's owner set is not something a pipeline gets to do
 | `timeout-minutes` | no | `30` | How long to wait for the run. |
 | `poll-interval-seconds` | no | `15` | How often to check for completion. |
 | `fail-on-timeout` | no | `false` | `true` fails the build when the run overruns instead of warning. |
-| `fail-on-run-error` | no | `false` | `true` fails the build when the run could not be judged (outage, dead simulations, a check that never ran) instead of skipping. |
+| `fail-on-run-error` | no | `false` | `true` fails the build when the run could not be judged (outage, simulations that failed on our side, a check that never ran, a cancelled run) instead of skipping. |
 | `cancel-on-exit` | no | `true` | Stop the Roark run when the workflow is cancelled or the wait times out. |
 | `cli-version` | no | pinned | Version of `@roarkanalytics/cli` to run. |
 | `api-base-url` | no | `https://api.roark.ai` | Override the API base URL. |
