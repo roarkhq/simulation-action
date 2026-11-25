@@ -17,7 +17,7 @@ jobs:
       # The gate is a shell script customers' pipelines depend on, so an unquoted
       # expansion here is a broken build for them, not just a style nit.
       - name: ShellCheck
-        run: shellcheck scripts/gate.sh
+        run: shellcheck scripts/gate.sh scripts/test-gate.sh
 
       - name: Validate action metadata
         run: |
@@ -56,6 +56,11 @@ jobs:
           expected='{"orderNumber":"12345","customerName":"John Doe","query":"a=b&c=d"}'
           echo "$actual"
           [ "$actual" = "$expected" ] || { echo "expected: $expected"; exit 1; }
+
+      # Every kind of verdict, turned into the exit code and `verdict` output a
+      # customer's pipeline branches on, against a fake CLI.
+      - name: Verdict to exit code
+        run: bash scripts/test-gate.sh
 
       - name: Rejects missing and conflicting inputs
         run: |

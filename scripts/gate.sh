@@ -10,10 +10,11 @@
 # make the agent worse?" — and only a run that actually ran can answer it:
 #
 #   PASSED   every check cleared its own minimum.                        exit 0
-#   FAILED   the run completed cleanly and a check fell short.           exit 1
+#   FAILED   a check fell short on a run that completed cleanly, or the  exit 1
+#            agent could not be reached or never spoke.
 #   SKIPPED  the run never produced a judgeable result: a Roark outage,  exit 0
-#            a model-provider blip, sims that died mid-flight, a check
-#            that never ran. Loud, but not merge-blocking.
+#            a model-provider blip, sims that failed on our side, a check
+#            that never ran, a cancelled run. Loud, but not merge-blocking.
 #
 # SKIPPED exists because a red build has to mean something. If our own
 # infrastructure can turn a pipeline red, the first thing every team learns is to
@@ -310,33 +311,58 @@ fi
 
 passed="$(printf '%s' "$verdict" | jq -r '.passed')"
 
-# Split the run's failures into the two kinds that mean completely different things.
+# Split the run's failures into the kinds that mean completely different things.
 #
 #   criteria      — METRIC_BELOW_MIN_PASS_RATE. The run measured your agent and your
-#                   agent fell short. THE ONLY THING THAT TURNS THIS STEP RED.
+#                   agent fell short.
+#   availability  — AGENT_NEVER_SPOKE (your agent answered and said nothing) and
+#                   AGENT_UNREACHABLE (it did not answer, was busy or declined). A
+#                   count of things your agent did, not a rate over a partial run, so
+#                   an outage elsewhere in the run cannot make it untrue.
 #   operational   — everything else: the run did not complete (RUN_NOT_COMPLETED),
-#                   sims dropped out before they were graded (INCOMPLETE_COVERAGE),
-#                   or a check produced no result at all (METRIC_NOT_EVALUATED).
-#                   Roark infrastructure, a model provider, a cloud region: ours.
+#                   simulations failed on our side (PLATFORM_FAILURE), sims dropped out
+#                   before they were graded (INCOMPLETE_COVERAGE), or a check produced
+#                   no result at all (METRIC_NOT_EVALUATED). Roark infrastructure, a
+#                   model provider, a cloud region, or a run someone cancelled: ours.
 #
-# An unknown `type` counts as operational. A failure kind this version of the action
-# has never heard of is one we added after it shipped, and inventing a red build out
-# of a string we cannot read is not a judgement about your agent. It still prints.
-operational_failures="$(printf '%s' "$verdict" | jq -c '[.failures[] | select(.type != "METRIC_BELOW_MIN_PASS_RATE")]')"
+# Criteria and availability turn this step red. An unknown `type` counts as
+# operational: a failure kind this version of the action has never heard of is one we
+# added after it shipped, and inventing a red build out of a string we cannot read is
+# not a judgement about your agent. It still prints.
+readonly AGENT_FAILURE_TYPES='["METRIC_BELOW_MIN_PASS_RATE", "AGENT_NEVER_SPOKE", "AGENT_UNREACHABLE"]'
+operational_failures="$(printf '%s' "$verdict" | jq -c --argjson agent "$AGENT_FAILURE_TYPES" \
+  '[.failures[] | select(.type as $type | $agent | index($type) | not)]')"
 operational_count="$(printf '%s' "$operational_failures" | jq -r 'length')"
+availability_count="$(printf '%s' "$verdict" | jq -r \
+  '[.failures[] | select(.type == "AGENT_NEVER_SPOKE" or .type == "AGENT_UNREACHABLE")] | length')"
 score="$(printf '%s' "$verdict" | jq -r 'if .score == null then empty else (.score * 10 | round) / 10 end')"
 checks_total="$(printf '%s' "$verdict" | jq -r '.checks | length')"
 checks_passed="$(printf '%s' "$verdict" | jq -r '[.checks[] | select(.passed)] | length')"
 
-# One line per operational failure, in the same shape as render_failures below.
-render_operational() {
-  printf '%s' "$operational_failures" | jq -r '
-    .[] |
-    if   .type == "RUN_NOT_COMPLETED"    then "- The run did not complete (\(.status)), so there is no result to judge."
-    elif .type == "INCOMPLETE_COVERAGE"  then "- Only \(.evaluatedCalls) of \(.expectedCalls) simulations were evaluated, so the run was judged on an incomplete set."
+# One line per failure, in the customer's terms and in the words the Roark dashboard
+# uses. Every arm matches a `type` the API actually emits; an unknown type still
+# prints rather than being silently dropped, so a new failure kind degrades to noisy
+# instead of invisible.
+# The backticks are Markdown code spans for the step summary, not command substitution.
+# shellcheck disable=SC2016
+readonly JQ_DESCRIBE_FAILURE='
+  def ended: {"CANCELLED": "was cancelled", "TIMED_OUT": "ran out of time", "FAILED": "stopped on an error"}[.status] // "did not complete";
+  def describe:
+    if .type == "RUN_NOT_COMPLETED" then
+      if .gradedSims == null or .plannedSims == null then "- The run \(ended), so it cannot pass."
+      elif .gradedSims == 0 then "- The run \(ended) before any simulation was graded."
+      else "- The run \(ended) after \(.gradedSims) of \(.plannedSims) simulations were graded. The checks cover those \(.gradedSims)." end
+    elif .type == "AGENT_NEVER_SPOKE" then "- \(.agentName // "Your agent") never spoke on \(.neverSpokeCalls) of \(.totalCalls) simulations, more than the \(.maxShare)% a run can pass with. Those simulations are not counted in any check."
+    elif .type == "AGENT_UNREACHABLE" then "- \(.agentName // "Your agent") could not be reached on \(.unreachableCalls) of \(.totalCalls) simulations (no answer, busy or declined), so those have no results."
+    elif .type == "PLATFORM_FAILURE" then "- \(.failedCalls) of \(.totalCalls) simulations could not run because of a problem on our side. They are not counted in any check."
+    elif .type == "INCOMPLETE_COVERAGE" then "- Only \(.evaluatedCalls) of \(.expectedCalls) simulations were evaluated, so the run was judged on an incomplete set."
     elif .type == "METRIC_NOT_EVALUATED" then "- `\(.metricName // .metricDefinitionId)` produced no result on any simulation."
-    else "- \(.type)" end
-  '
+    elif .type == "METRIC_BELOW_MIN_PASS_RATE" then "- `\(.metricName // .metricDefinitionId)` passed \(.passRate)% of simulations, below \(if .inherited then "the default minimum" else "its own minimum" end) of \(.minPassRate)%."
+    else "- \(.type)" end;
+'
+
+render_operational() {
+  printf '%s' "$operational_failures" | jq -r "${JQ_DESCRIBE_FAILURE} .[] | describe"
 }
 
 # A pipeline-level override, applied on top of the server's verdict: the run plan
@@ -367,18 +393,8 @@ emit "score=${score}"
 emit "checks-passed=${checks_passed}"
 emit "checks-total=${checks_total}"
 
-# One line per missed criterion, in the customer's terms. Every arm matches a
-# `type` the API actually emits; an unknown type still prints rather than being
-# silently dropped, so a new failure kind degrades to noisy instead of invisible.
 render_failures() {
-  printf '%s' "$verdict" | jq -r '
-    .failures[] |
-    if   .type == "RUN_NOT_COMPLETED"        then "- The run did not complete (\(.status)), so there is no result to judge."
-    elif .type == "INCOMPLETE_COVERAGE"      then "- Only \(.evaluatedCalls) of \(.expectedCalls) simulations were evaluated, so the run was judged on an incomplete set."
-    elif .type == "METRIC_NOT_EVALUATED"     then "- `\(.metricName // .metricDefinitionId)` produced no result on any simulation."
-    elif .type == "METRIC_BELOW_MIN_PASS_RATE" then "- `\(.metricName // .metricDefinitionId)` passed \(.passRate)% of simulations, below \(if .inherited then "the default minimum" else "its own minimum" end) of \(.minPassRate)%."
-    else "- \(.type)" end
-  '
+  printf '%s' "$verdict" | jq -r "${JQ_DESCRIBE_FAILURE} .failures[] | describe"
   # Failures the pipeline's own stricter bar introduced. Reported separately: the
   # plan was fine with these, this pipeline is not, and conflating the two sends
   # people to edit a plan that never failed.
@@ -406,7 +422,11 @@ score_line() {
 # in either direction. A check sitting below its bar on a run that half-collapsed is
 # not a regression, and applying a stricter bar to numbers we do not trust would only
 # invent a more confident wrong answer.
-if ((operational_count > 0)); then
+#
+# Availability failures are the exception, and win over an operational one: an agent
+# that did not pick up, or picked up and said nothing, did so whatever else went
+# wrong in the run. Skipping it would let the most basic regression through.
+if ((operational_count > 0 && availability_count == 0)); then
   summary '### Roark simulation skipped'
   summary ''
   summary 'The run did not produce a judgeable result, so there was nothing to gate on.'
